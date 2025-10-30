@@ -12,25 +12,41 @@ from supabase import create_client, Client
 # ---------- Page setup ----------
 st.set_page_config(page_title="Prioritization", layout="wide")
 
-# ---- Hide Streamlit default header, footer, and menu ----
+# ---- Clean, branded app chrome ----
 st.markdown("""
 <style>
-/* Hide top bar, deploy button, and Streamlit header */
-header {visibility: hidden;}
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-[data-testid="stStatusWidget"] {display: none;}
-[data-testid="stDecoration"] {display: none;}
-[data-testid="stToolbar"] {display: none;}
-[data-testid="stAppViewBlockContainer"] > div:first-child {padding-top: 0rem !important;}
-</style>
-""", unsafe_allow_html=True)
+/* Hide Streamlit system chrome */
+header, footer, [data-testid="stToolbar"], [data-testid="stDecoration"],
+[data-testid="stStatusWidget"], #MainMenu {
+    display: none !important;
+}
 
-st.markdown(
-    "<h1 style='display:flex;align-items:center;gap:.5rem;'>🏔️ Prioritization</h1>",
-    unsafe_allow_html=True,
-)
-st.caption("Add initiatives, vote up to 5 times.")
+/* Remove extra padding at top from hidden header */
+[data-testid="stAppViewBlockContainer"] > div:first-child {
+    padding-top: 0rem !important;
+}
+
+/* Custom footer styling */
+.custom-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #f9fafb; /* subtle light gray */
+    color: #374151;       /* dark gray text */
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-align: center;
+    padding: 0.6rem 0;
+    border-top: 1px solid #e5e7eb;
+    z-index: 100;
+}
+</style>
+
+<div class="custom-footer">
+    Deckers Digital & Data · Internal Use Only
+</div>
+""", unsafe_allow_html=True)
 
 # ---------- Styling (softer neutrals, green highlight) ----------
 st.markdown("""
