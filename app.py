@@ -12,8 +12,13 @@ from supabase import create_client, Client
 
 # ---------- Page setup ----------
 st.set_page_config(page_title="D&D Prioritization", layout="wide")
-st.title("D&D Prioritization")
-st.caption("Vote up to 5 times per person. One vote per initiative. Toggle to unvote. Live results without flicker.")
+
+st.markdown(
+    "<h1 style='display: flex; align-items: center; gap: 0.5rem;'>🏔️ D&D Prioritization</h1>",
+    unsafe_allow_html=True,
+)
+st.markdown("### Add initiatives, vote up to 5 times.")
+st.caption("One vote per initiative. Toggle to unvote. Live results update in real time.")
 
 # ---------- Secrets / clients ----------
 SB_URL = st.secrets.get("SUPABASE_URL")
@@ -60,7 +65,7 @@ def inc_vote(row_id: str):
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
 def dec_vote(row_id: str):
-    # Requires dec_vote(row_id uuid) RPC (see SQL in your project):
+    # Requires dec_vote(row_id uuid) RPC in Supabase:
     # update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
     sb.rpc("dec_vote", {"row_id": row_id}).execute()
 
@@ -89,7 +94,6 @@ if df_list.empty:
     st.info("No initiatives yet. Add one above.")
 else:
     # Build a table-like editor with a boolean "Your vote" column.
-    # Index by initiative id to track toggles reliably without reordering.
     view = df_list[["initiative","category"]].copy()
     view["Your vote"] = df_list["id"].apply(lambda x: x in st.session_state.voted_ids)
     view.index = df_list["id"]  # stable row identity
@@ -117,10 +121,9 @@ else:
     newly_selected   = edited_selected - current_selected
     newly_deselected = current_selected - edited_selected
 
-    # If user tries to add beyond the cap, ignore that change and revert immediately
+    # If user tries to add beyond the cap, ignore and revert immediately
     if len(current_selected) + len(newly_selected) - len(newly_deselected) > MAX_VOTES_PER_PERSON:
         st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
-        # Do not persist anything; just rerun so UI resets to the canonical (session) state
         st.rerun()
 
     # Apply allowed changes (DB + session)
@@ -160,7 +163,6 @@ def render_results(df_in: pd.DataFrame):
         return
     # Results table: Initiative | Category | Votes
     df = df_in.copy()
-    # Sorting here doesn't affect the voting section order
     df = df.sort_values(by=["votes","initiative"], ascending=[False, True])
     show = ["initiative","category","votes"]
     with placeholder.container():
@@ -179,7 +181,7 @@ if st.session_state.live_mode:
 else:
     render_results(fetch_df_raw())
 
-# ---------- Export (single widget per run) ----------
+# ---------- Export ----------
 latest = fetch_df_raw()
 if not latest.empty:
     latest = latest.sort_values(by=["votes","initiative"], ascending=[False, True])
