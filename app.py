@@ -17,8 +17,7 @@ st.markdown(
     "<h1 style='display: flex; align-items: center; gap: 0.5rem;'>🏔️ D&D Prioritization</h1>",
     unsafe_allow_html=True,
 )
-st.markdown("### Add initiatives, vote up to 5 times.")
-st.caption("One vote per initiative. Toggle to unvote. Live results update in real time.")
+st.caption("Add initiatives, vote up to 5 times.")
 
 # ---------- Secrets / clients ----------
 SB_URL = st.secrets.get("SUPABASE_URL")
