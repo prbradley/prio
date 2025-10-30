@@ -1,8 +1,8 @@
 # app.py — Prioritization (Supabase)
 # - One big, full-width button per initiative (mobile-friendly)
-# - Green = selected (uses primary button styling + CSS override)
+# - Soft green shading when selected
 # - 5 votes per person (per device/session), 1 per initiative, toggle to unvote
-# - Stable order; live results table below
+# - Stable order; live results below
 
 import os, uuid, time
 import pandas as pd
@@ -17,28 +17,26 @@ st.markdown(
 )
 st.caption("Add initiatives, vote up to 5 times.")
 
-# ---------- Styling (make primary buttons green + full-width row feel) ----------
+# ---------- Styling (pleasant selected shading; full-width row buttons) ----------
 st.markdown("""
 <style>
-/* Make 'primary' buttons green (selected state) */
+/* Unselected (secondary) buttons: neutral */
+[data-testid="baseButton-secondary"] {
+  background: #f3f4f6 !important;     /* gray-100 */
+  color: #111827 !important;           /* gray-900 */
+  border: 1px solid #e5e7eb !important;/* gray-200 */
+}
+/* Selected (primary) buttons: soft green gradient + readable text */
 [data-testid="baseButton-primary"] {
-  background-color: #16a34a !important;   /* green-600 */
-  border-color: #15803d !important;       /* green-700 */
+  background: linear-gradient(180deg, #d1fae5 0%, #a7f3d0 100%) !important; /* emerald-100 -> emerald-200 */
+  color: #065f46 !important;            /* emerald-800 */
+  border: 1px solid #6ee7b7 !important; /* emerald-300 */
 }
 [data-testid="baseButton-primary"]:hover {
-  background-color: #15803d !important;
-  border-color: #166534 !important;
+  background: linear-gradient(180deg, #a7f3d0 0%, #86efac 100%) !important; /* emerald-200 -> emerald-300 */
+  border-color: #34d399 !important;     /* emerald-400 */
 }
-[data-testid="baseButton-primary"]:focus {
-  box-shadow: 0 0 0 0.2rem rgba(22,163,74,0.35) !important;
-}
-
-/* Slightly tighten padding on small screens */
-@media (max-width: 640px) {
-  .block-container { padding-top: .5rem; padding-left: .75rem; padding-right: .75rem; }
-}
-
-/* Button label: single line with ellipsis so long names don't wrap */
+/* Full-width row look; single line with ellipsis */
 .stButton > button {
   width: 100% !important;
   text-align: left !important;
@@ -49,6 +47,10 @@ st.markdown("""
   font-weight: 600;
 }
 .stButton { margin-bottom: .35rem; }
+/* Tighter container on small screens */
+@media (max-width: 640px) {
+  .block-container { padding-top: .5rem; padding-left: .75rem; padding-right: .75rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -129,12 +131,11 @@ else:
         item_id = str(r["id"])
         selected = (item_id in st.session_state.voted_ids)
 
-        # Full-width button with "Name · Category" as its label
+        # Full-width button with "Name · Category"
         name = str(r.get("initiative", "(untitled)")).strip() or "(untitled)"
         cat  = str(r.get("category", "Other")).strip() or "Other"
         label = f"{name} · {cat}"
 
-        # Render as 'primary' (green) when selected; 'secondary' otherwise
         clicked = st.button(
             label,
             key=f"btn-{item_id}",
@@ -144,15 +145,15 @@ else:
         )
 
         if clicked:
-            # Toggle logic with cap enforcement
+            # Toggle with cap enforcement
             if selected:
                 # Unvote
                 try:
                     dec_vote(item_id)
                 finally:
                     st.session_state.voted_ids.discard(item_id)
+                st.rerun()  # repaint now so green state clears
             else:
-                # New selection
                 if len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
                     st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
                     # Do not add; leave as unselected
@@ -161,9 +162,9 @@ else:
                         inc_vote(item_id)
                     finally:
                         st.session_state.voted_ids.add(item_id)
-            # No explicit rerun needed; on next render, button style reflects state
+                    st.rerun()  # repaint now so green state applies
 
-# Recompute and show remaining after any clicks processed in this run
+# Recompute and show remaining after any clicks processed
 remaining = max(0, MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids))
 st.write(f"**Votes remaining: {remaining}**")
 
