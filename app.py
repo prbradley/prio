@@ -14,7 +14,7 @@ from supabase import create_client, Client
 st.set_page_config(page_title="Prioritization", layout="wide")
 
 st.markdown(
-    "<h1 style='display: flex; align-items: center; gap: 0.5rem;'>🏔️ D&D Prioritization</h1>",
+    "<h1 style='display: flex; align-items: center; gap: 0.5rem;'>🏔️ Prioritization</h1>",
     unsafe_allow_html=True,
 )
 st.caption("Add initiatives, vote up to 5 times.")
