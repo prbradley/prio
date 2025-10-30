@@ -1,9 +1,10 @@
-# app.py — D&D Prioritization (Supabase)
+# app.py — Prioritization (Supabase)
 # - 5 votes per person (per device/session)
 # - One vote per initiative (toggle via checkbox)
 # - Voting table: Initiative | Category | Your vote (no counts)
 # - Results table: Initiative | Category | Votes
 # - Live results without flicker; stable order in voting section
+# - Mobile-friendly rows; read-only text columns; vote cap persists across reloads
 
 import os, uuid, time
 import pandas as pd
@@ -12,12 +13,29 @@ from supabase import create_client, Client
 
 # ---------- Page setup ----------
 st.set_page_config(page_title="Prioritization", layout="wide")
-
 st.markdown(
     "<h1 style='display: flex; align-items: center; gap: 0.5rem;'>🏔️ Prioritization</h1>",
     unsafe_allow_html=True,
 )
 st.caption("Add initiatives, vote up to 5 times.")
+
+# Compact, single-line rows on mobile for data editor
+st.markdown("""
+<style>
+/* Keep cells on a single line and tighten padding for compact mobile view */
+[data-testid="stDataFrame"] table tbody tr td,
+[data-testid="stDataFrame"] table thead tr th {
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  [data-testid="stDataFrame"] table td,
+  [data-testid="stDataFrame"] table th {
+    padding: 4px 6px !important;
+    font-size: 0.95rem !important;
+  }
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ---------- Secrets / clients ----------
 SB_URL = st.secrets.get("SUPABASE_URL")
@@ -37,6 +55,18 @@ CATEGORIES = [
 # Session state: which initiative IDs this viewer has voted for
 if "voted_ids" not in st.session_state:
     st.session_state.voted_ids = set()
+
+# Restore votes from URL query param on first load (persists across refresh)
+qs = st.experimental_get_query_params()
+if "v" in qs and isinstance(qs["v"], list) and qs["v"]:
+    if not st.session_state.voted_ids:
+        ids = [i for i in qs["v"][0].split(",") if i]
+        st.session_state.voted_ids = set(ids)
+
+def _save_votes_to_url():
+    # Store voted ids in the URL so refresh doesn't reset the session cap
+    v = ",".join(st.session_state.voted_ids)
+    st.experimental_set_query_params(v=v)
 
 # ---------- Data access ----------
 def fetch_df_raw() -> pd.DataFrame:
@@ -102,6 +132,7 @@ else:
         num_rows="fixed",
         use_container_width=True,
         hide_index=True,
+        disabled=["initiative","category"],  # lock text columns; only checkbox is editable
         column_config={
             "initiative": st.column_config.TextColumn("Initiative", width="medium"),
             "category": st.column_config.TextColumn("Category", width="small"),
@@ -123,6 +154,7 @@ else:
     # If user tries to add beyond the cap, ignore and revert immediately
     if len(current_selected) + len(newly_selected) - len(newly_deselected) > MAX_VOTES_PER_PERSON:
         st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
+        _save_votes_to_url()
         st.rerun()
 
     # Apply allowed changes (DB + session)
@@ -142,6 +174,7 @@ else:
         changed = True
 
     if changed:
+        _save_votes_to_url()
         st.rerun()
 
 st.divider()
@@ -162,6 +195,7 @@ def render_results(df_in: pd.DataFrame):
         return
     # Results table: Initiative | Category | Votes
     df = df_in.copy()
+    # Sorting here doesn't affect the voting section order
     df = df.sort_values(by=["votes","initiative"], ascending=[False, True])
     show = ["initiative","category","votes"]
     with placeholder.container():
@@ -173,7 +207,7 @@ render_results(df_list)
 # Live loop updates only the results table (no widget duplication)
 if st.session_state.live_mode:
     start = time.time()
-    max_seconds = 120
+    max_seconds = 600  # 10 minutes; adjust as desired
     while time.time() - start < max_seconds:
         time.sleep(1)
         render_results(fetch_df_raw())
