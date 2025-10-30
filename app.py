@@ -82,7 +82,7 @@ def inc_vote(row_id: str):
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
 def dec_vote(row_id: str):
-    # Requires dec_vote(row_id uuid) RPC in Supabase:
+    # Requires dec_vote(row_id uuid) RPC:
     # update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
     sb.rpc("dec_vote", {"row_id": row_id}).execute()
 
@@ -103,17 +103,17 @@ st.divider()
 
 # ---------- Voting section (table; fixed order; one-line per item; NO vote counts) ----------
 df_list = fetch_df_raw()
-remaining = MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)
-remaining = max(0, remaining)
-st.subheader(f"All initiatives · Votes remaining: {remaining}")
+
+header_placeholder = st.empty()  # we'll fill this AFTER we see the edited checkboxes
 
 if df_list.empty:
+    header_placeholder.subheader(f"All initiatives · Votes remaining: {MAX_VOTES_PER_PERSON}")
     st.info("No initiatives yet. Add one above.")
 else:
-    # Build a table-like editor with a boolean "Your vote" column.
+    # Build table with a boolean "Your vote" column; index by id to keep stable identity
     view = df_list[["initiative","category"]].copy()
     view["Your vote"] = df_list["id"].apply(lambda x: x in st.session_state.voted_ids)
-    view.index = df_list["id"]  # stable row identity
+    view.index = df_list["id"]
 
     edited = st.data_editor(
         view,
@@ -132,19 +132,22 @@ else:
         column_order=["initiative","category","Your vote"],
     )
 
-    # Enforce: max 5 total selections strictly BEFORE applying any DB change
-    current_selected = set(st.session_state.voted_ids)
-    edited_selected  = {rid for rid, r in edited.iterrows() if bool(r["Your vote"])}
+    # Compute remaining directly from the edited table (instant feedback)
+    edited_selected = {rid for rid, r in edited.iterrows() if bool(r["Your vote"])}
+    remaining_display = max(0, MAX_VOTES_PER_PERSON - len(edited_selected))
+    header_placeholder.subheader(f"All initiatives · Votes remaining: {remaining_display}")
 
+    # Determine diffs vs session
+    current_selected = set(st.session_state.voted_ids)
     newly_selected   = edited_selected - current_selected
     newly_deselected = current_selected - edited_selected
 
-    # If user tries to add beyond the cap, ignore and revert immediately
+    # Reject any change that would exceed the cap (immediate revert)
     if len(current_selected) + len(newly_selected) - len(newly_deselected) > MAX_VOTES_PER_PERSON:
         st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
         st.rerun()  # rerun ONLY on reject to reset the extra tick
 
-    # Apply allowed changes (DB + session) WITHOUT rerun (prevents flicker)
+    # Apply allowed changes WITHOUT rerun (prevents flicker)
     for rid in newly_selected:
         try:
             inc_vote(rid)
