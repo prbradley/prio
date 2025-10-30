@@ -4,7 +4,7 @@
 # - Voting table: Initiative | Category | Your vote (no counts)
 # - Results table: Initiative | Category | Votes
 # - Live results without flicker; stable order in voting section
-# - Mobile-friendly rows; read-only text columns; vote cap persists across reloads
+# - Mobile-friendly rows; read-only text columns
 
 import os, uuid, time
 import pandas as pd
@@ -55,18 +55,6 @@ CATEGORIES = [
 # Session state: which initiative IDs this viewer has voted for
 if "voted_ids" not in st.session_state:
     st.session_state.voted_ids = set()
-
-# Restore votes from URL query param on first load (persists across refresh)
-qs = st.experimental_get_query_params()
-if "v" in qs and isinstance(qs["v"], list) and qs["v"]:
-    if not st.session_state.voted_ids:
-        ids = [i for i in qs["v"][0].split(",") if i]
-        st.session_state.voted_ids = set(ids)
-
-def _save_votes_to_url():
-    # Store voted ids in the URL so refresh doesn't reset the session cap
-    v = ",".join(st.session_state.voted_ids)
-    st.experimental_set_query_params(v=v)
 
 # ---------- Data access ----------
 def fetch_df_raw() -> pd.DataFrame:
@@ -154,28 +142,20 @@ else:
     # If user tries to add beyond the cap, ignore and revert immediately
     if len(current_selected) + len(newly_selected) - len(newly_deselected) > MAX_VOTES_PER_PERSON:
         st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
-        _save_votes_to_url()
-        st.rerun()
+        st.rerun()  # rerun ONLY on reject to reset the extra tick
 
-    # Apply allowed changes (DB + session)
-    changed = False
+    # Apply allowed changes (DB + session) WITHOUT rerun (prevents flicker)
     for rid in newly_selected:
         try:
             inc_vote(rid)
         finally:
             st.session_state.voted_ids.add(rid)
-        changed = True
 
     for rid in newly_deselected:
         try:
             dec_vote(rid)
         finally:
             st.session_state.voted_ids.discard(rid)
-        changed = True
-
-    if changed:
-        _save_votes_to_url()
-        st.rerun()
 
 st.divider()
 
@@ -195,7 +175,6 @@ def render_results(df_in: pd.DataFrame):
         return
     # Results table: Initiative | Category | Votes
     df = df_in.copy()
-    # Sorting here doesn't affect the voting section order
     df = df.sort_values(by=["votes","initiative"], ascending=[False, True])
     show = ["initiative","category","votes"]
     with placeholder.container():
