@@ -1,6 +1,6 @@
-# app.py — In-Room Prioritization (Supabase)
+# app.py — D&D Prioritization (Supabase)
 # - 5 votes per person (per device/session)
-# - One vote per initiative (toggle via table checkbox)
+# - One vote per initiative (toggle via checkbox)
 # - Voting table: Initiative | Category | Your vote (no counts)
 # - Results table: Initiative | Category | Votes
 # - Live results without flicker; stable order in voting section
@@ -11,8 +11,8 @@ import streamlit as st
 from supabase import create_client, Client
 
 # ---------- Page setup ----------
-st.set_page_config(page_title="In-Room Prioritization", layout="wide")
-st.title("🏔️ In-Room Initiative Prioritization")
+st.set_page_config(page_title="D&D Prioritization", layout="wide")
+st.title("D&D Prioritization")
 st.caption("Vote up to 5 times per person. One vote per initiative. Toggle to unvote. Live results without flicker.")
 
 # ---------- Secrets / clients ----------
@@ -26,7 +26,7 @@ sb: Client = create_client(SB_URL, SB_KEY)
 # ---------- Config ----------
 MAX_VOTES_PER_PERSON = 5
 CATEGORIES = [
-    "Operating Model","Change Fatigue","Unclear Accountabilities","Prioritization",
+    "Change Fatigue","Unclear Accountabilities","Prioritization",
     "Communication","Culture","Cross Functional Friction","Other"
 ]
 
@@ -36,7 +36,7 @@ if "voted_ids" not in st.session_state:
 
 # ---------- Data access ----------
 def fetch_df_raw() -> pd.DataFrame:
-    # Keep stable order for the voting section: first-in stays first (no reordering)
+    # Stable order for the voting section: first-in stays first (no reordering)
     res = sb.table("initiatives").select("*").order("inserted_at", desc=False).execute()
     df = pd.DataFrame(res.data or [])
     if df.empty:
@@ -60,8 +60,8 @@ def inc_vote(row_id: str):
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
 def dec_vote(row_id: str):
-    # Requires dec_vote(row_id uuid) RPC in Supabase:
-    #   update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
+    # Requires dec_vote(row_id uuid) RPC (see SQL in your project):
+    # update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
     sb.rpc("dec_vote", {"row_id": row_id}).execute()
 
 # ---------- Add initiative (always visible: name + category) ----------
@@ -104,47 +104,40 @@ else:
             "category": st.column_config.TextColumn("Category", width="small"),
             "Your vote": st.column_config.CheckboxColumn(
                 "Vote",
-                help="Select up to 5. Unselect one to free a vote.",
+                help="Select up to 5. Unselect one to choose another.",
             ),
         },
         column_order=["initiative","category","Your vote"],
     )
 
-    # Enforce: max 5 total selections; 1 per initiative; allow unvote
-    changed = False
-    # Count intended total selections in the edited table
-    intended_selected_ids = {rid for rid, r in edited.iterrows() if bool(r["Your vote"])}
-    # If user tried to push beyond cap, revert by restoring session's allowed state
-    if len(intended_selected_ids) > MAX_VOTES_PER_PERSON:
+    # Enforce: max 5 total selections strictly BEFORE applying any DB change
+    current_selected = set(st.session_state.voted_ids)
+    edited_selected  = {rid for rid, r in edited.iterrows() if bool(r["Your vote"])}
+
+    newly_selected   = edited_selected - current_selected
+    newly_deselected = current_selected - edited_selected
+
+    # If user tries to add beyond the cap, ignore that change and revert immediately
+    if len(current_selected) + len(newly_selected) - len(newly_deselected) > MAX_VOTES_PER_PERSON:
         st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
-        # Repaint to the canonical state without applying any DB changes
+        # Do not persist anything; just rerun so UI resets to the canonical (session) state
         st.rerun()
 
-    # Apply diffs (DB + session) within the cap
-    for row_id, row in edited.iterrows():
-        new_mark = bool(row["Your vote"])
-        was_mark = (row_id in st.session_state.voted_ids)
+    # Apply allowed changes (DB + session)
+    changed = False
+    for rid in newly_selected:
+        try:
+            inc_vote(rid)
+        finally:
+            st.session_state.voted_ids.add(rid)
+        changed = True
 
-        if new_mark and not was_mark:
-            # adding a vote
-            if len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
-                # refuse and revert
-                st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
-                changed = True
-                st.rerun()
-            try:
-                inc_vote(row_id)
-            finally:
-                st.session_state.voted_ids.add(row_id)
-            changed = True
-
-        elif (not new_mark) and was_mark:
-            # removing a vote
-            try:
-                dec_vote(row_id)
-            finally:
-                st.session_state.voted_ids.discard(row_id)
-            changed = True
+    for rid in newly_deselected:
+        try:
+            dec_vote(rid)
+        finally:
+            st.session_state.voted_ids.discard(rid)
+        changed = True
 
     if changed:
         st.rerun()
@@ -167,6 +160,7 @@ def render_results(df_in: pd.DataFrame):
         return
     # Results table: Initiative | Category | Votes
     df = df_in.copy()
+    # Sorting here doesn't affect the voting section order
     df = df.sort_values(by=["votes","initiative"], ascending=[False, True])
     show = ["initiative","category","votes"]
     with placeholder.container():
