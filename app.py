@@ -6,7 +6,7 @@ import streamlit as st
 from supabase import create_client, Client
 
 # ---------- Page setup ----------
-st.set_page_config(page_title="In-Room Prioritization", layout="wide")
+st.set_page_config(page_title="D&D Day 3 Prioritization", layout="wide")
 st.title("🏔️ In-Room Initiative Prioritization")
 st.caption("Add initiatives, vote up to 5 times per person. Live results with no flicker.")
 
@@ -61,11 +61,21 @@ def inc_vote(row_id: str):
 # ---------- Top: Add initiative (always visible, single field) ----------
 st.subheader("Add an initiative")
 new_name = st.text_input("Initiative name", placeholder="e.g., Improve handoffs between eComm and Retail")
+new_cat = st.selectbox("Category", [
+    "Operating Model","Change Fatigue","Unclear Accountabilities","Prioritization",
+    "Communication","Culture","Cross Functional Friction","Other"
+])
 add_cols = st.columns([1, 6])
 if add_cols[0].button("Add"):
     if new_name.strip():
-        add_initiative(new_name.strip())
-        st.success("Added.")
+        row = {
+            "id": str(uuid.uuid4()),
+            "initiative": new_name.strip(),
+            "category": new_cat,
+            "votes": 0
+        }
+        sb.table("initiatives").insert(row).execute()
+        st.success(f"Added to {new_cat}.")
         st.rerun()
     else:
         st.warning("Please enter an initiative name.")
