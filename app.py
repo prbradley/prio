@@ -1,8 +1,9 @@
 # app.py — In-Room Prioritization (Supabase)
 # - 5 votes per person (per device/session)
 # - One vote per initiative (toggle via table checkbox)
-# - Mobile-friendly one-line table (st.data_editor)
-# - Live results (no flicker), fixed order in voting section
+# - Voting table: Initiative | Category | Your vote (no counts)
+# - Results table: Initiative | Category | Votes
+# - Live results without flicker; stable order in voting section
 
 import os, uuid, time
 import pandas as pd
@@ -59,7 +60,8 @@ def inc_vote(row_id: str):
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
 def dec_vote(row_id: str):
-    # Requires dec_vote(row_id uuid) RPC (see SQL below)
+    # Requires dec_vote(row_id uuid) RPC in Supabase:
+    #   update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
     sb.rpc("dec_vote", {"row_id": row_id}).execute()
 
 # ---------- Add initiative (always visible: name + category) ----------
@@ -77,7 +79,7 @@ if col_btn.button("Add"):
 
 st.divider()
 
-# ---------- Voting section (table; fixed order; one-line per item) ----------
+# ---------- Voting section (table; fixed order; one-line per item; NO vote counts) ----------
 df_list = fetch_df_raw()
 remaining = MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)
 remaining = max(0, remaining)
@@ -88,7 +90,7 @@ if df_list.empty:
 else:
     # Build a table-like editor with a boolean "Your vote" column.
     # Index by initiative id to track toggles reliably without reordering.
-    view = df_list[["initiative","category","votes"]].copy()
+    view = df_list[["initiative","category"]].copy()
     view["Your vote"] = df_list["id"].apply(lambda x: x in st.session_state.voted_ids)
     view.index = df_list["id"]  # stable row identity
 
@@ -100,30 +102,44 @@ else:
         column_config={
             "initiative": st.column_config.TextColumn("Initiative", width="medium"),
             "category": st.column_config.TextColumn("Category", width="small"),
-            "votes": st.column_config.NumberColumn("Votes", width="small", help="Total votes"),
-            "Your vote": st.column_config.CheckboxColumn("Vote", help="Toggle to vote/unvote (max 5 total)"),
-        }
+            "Your vote": st.column_config.CheckboxColumn(
+                "Vote",
+                help="Select up to 5. Unselect one to free a vote.",
+            ),
+        },
+        column_order=["initiative","category","Your vote"],
     )
 
-    # Process changes: compare edited checkboxes to session.voted_ids
-    # We never change row order here.
+    # Enforce: max 5 total selections; 1 per initiative; allow unvote
     changed = False
+    # Count intended total selections in the edited table
+    intended_selected_ids = {rid for rid, r in edited.iterrows() if bool(r["Your vote"])}
+    # If user tried to push beyond cap, revert by restoring session's allowed state
+    if len(intended_selected_ids) > MAX_VOTES_PER_PERSON:
+        st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
+        # Repaint to the canonical state without applying any DB changes
+        st.rerun()
+
+    # Apply diffs (DB + session) within the cap
     for row_id, row in edited.iterrows():
         new_mark = bool(row["Your vote"])
         was_mark = (row_id in st.session_state.voted_ids)
+
         if new_mark and not was_mark:
-            # User is trying to add a vote
+            # adding a vote
             if len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
-                st.warning("You’ve used all 5 votes on this device.")
-                changed = True  # trigger rerun to revert checkbox
-                continue
+                # refuse and revert
+                st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
+                changed = True
+                st.rerun()
             try:
                 inc_vote(row_id)
             finally:
                 st.session_state.voted_ids.add(row_id)
             changed = True
+
         elif (not new_mark) and was_mark:
-            # User is unvoting
+            # removing a vote
             try:
                 dec_vote(row_id)
             finally:
@@ -131,7 +147,6 @@ else:
             changed = True
 
     if changed:
-        # Rerun so the table reflects the canonical state from DB + session
         st.rerun()
 
 st.divider()
@@ -150,9 +165,8 @@ def render_results(df_in: pd.DataFrame):
         with placeholder.container():
             st.info("No initiatives yet.")
         return
-    # Results table: Initiative | Category | Votes (no updated_at)
+    # Results table: Initiative | Category | Votes
     df = df_in.copy()
-    # Sort for results display only (this does not affect the voting section order)
     df = df.sort_values(by=["votes","initiative"], ascending=[False, True])
     show = ["initiative","category","votes"]
     with placeholder.container():
