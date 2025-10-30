@@ -11,6 +11,21 @@ from supabase import create_client, Client
 
 # ---------- Page setup ----------
 st.set_page_config(page_title="Prioritization", layout="wide")
+
+# ---- Hide Streamlit default header, footer, and menu ----
+st.markdown("""
+<style>
+/* Hide top bar, deploy button, and Streamlit header */
+header {visibility: hidden;}
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+[data-testid="stStatusWidget"] {display: none;}
+[data-testid="stDecoration"] {display: none;}
+[data-testid="stToolbar"] {display: none;}
+[data-testid="stAppViewBlockContainer"] > div:first-child {padding-top: 0rem !important;}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown(
     "<h1 style='display:flex;align-items:center;gap:.5rem;'>🏔️ Prioritization</h1>",
     unsafe_allow_html=True,
