@@ -1,9 +1,9 @@
 # app.py — Prioritization (Supabase)
 # - 5 votes per person (per device/session)
-# - One vote per initiative (toggle via checkbox, immediate validation)
-# - Voting list: Initiative | Category | [Vote]
-# - Results table: Initiative | Category | Votes
-# - Live results; stable order; mobile-tighter rows
+# - One vote per initiative (checkbox per row with inline label)
+# - Immediate validation & rollback on 6th vote
+# - Mobile-optimized single-line rows (ellipsis)
+# - Results table below (Initiative | Category | Votes)
 
 import os, uuid, time
 import pandas as pd
@@ -18,14 +18,25 @@ st.markdown(
 )
 st.caption("Add initiatives, vote up to 5 times.")
 
-# Tighten row spacing a bit
+# Mobile-optimized styling: keep checkbox labels on one line with ellipsis
 st.markdown("""
 <style>
-.vote-row { display:flex; align-items:center; gap:.5rem; padding:.25rem 0; }
-.vote-name { font-weight:600; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.vote-cat  { flex:0 0 auto; opacity:.8; white-space:nowrap; }
-.vote-box  { flex:0 0 auto; }
-@media (max-width:640px){ .vote-row{ gap:.35rem; } }
+/* Tighten global paddings a bit on small screens */
+@media (max-width: 640px) {
+  .block-container { padding-top: 0.5rem; padding-left: 0.75rem; padding-right: 0.75rem; }
+}
+/* Checkbox label in one line with ellipsis */
+[data-testid="stCheckbox"] label, [data-testid="stToggle"] label {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Slightly smaller text on mobile */
+@media (max-width: 640px) {
+  [data-testid="stCheckbox"] label, [data-testid="stToggle"] label { font-size: 0.95rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,7 +55,7 @@ CATEGORIES = [
     "Communication","Culture","Cross Functional Friction","Other"
 ]
 
-# Session state: which initiative IDs this viewer has voted for
+# Track which initiative IDs this viewer has voted for
 if "voted_ids" not in st.session_state:
     st.session_state.voted_ids = set()
 
@@ -54,8 +65,11 @@ def fetch_df_raw() -> pd.DataFrame:
     df = pd.DataFrame(res.data or [])
     if df.empty:
         return pd.DataFrame(columns=["id","initiative","category","votes"])
-    df["category"] = df.get("category", "Other")
-    df["votes"] = pd.to_numeric(df.get("votes", 0), errors="coerce").fillna(0).astype(int)
+    if "category" not in df.columns:
+        df["category"] = "Other"
+    if "votes" not in df.columns:
+        df["votes"] = 0
+    df["votes"] = pd.to_numeric(df["votes"], errors="coerce").fillna(0).astype(int)
     return df
 
 def add_initiative(name: str, category: str):
@@ -70,6 +84,10 @@ def inc_vote(item_id: str):
     sb.rpc("inc_vote", {"row_id": item_id}).execute()
 
 def dec_vote(item_id: str):
+    # Ensure you have this RPC:
+    # create or replace function public.dec_vote(row_id uuid)
+    # returns void language sql as $$ update public.initiatives
+    # set votes = greatest(coalesce(votes,0)-1,0) where id=row_id; $$;
     sb.rpc("dec_vote", {"row_id": item_id}).execute()
 
 # ---------- Add initiative ----------
@@ -87,71 +105,62 @@ if c3.button("Add"):
 
 st.divider()
 
-# ---------- Voting (checkbox per row with callback) ----------
+# ---------- Voting (single inline checkbox per row) ----------
 df_list = fetch_df_raw()
 
-# Initialize widget state from session on first render
+# Initialize widget state for each row from session on first render
 for _, r in df_list.iterrows():
     key = f"cb-{r['id']}"
     if key not in st.session_state:
         st.session_state[key] = (r["id"] in st.session_state.voted_ids)
 
 def handle_toggle(item_id: str, key: str):
-    """Runs on each checkbox change; enforces limits and updates DB+session."""
+    """Enforce max 5 and 1 per initiative; update DB + session immediately."""
     new_val = st.session_state[key]
 
-    # If turning ON
-    if new_val:
-        # Already counted? nothing to do
+    if new_val:  # turning ON
         if item_id in st.session_state.voted_ids:
             return
-        # Hitting the cap? revert and warn
         if len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
-            st.session_state[key] = False  # flip it back off immediately
+            # Reject and flip back off immediately
+            st.session_state[key] = False
             st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
             return
-        # OK to add
         try:
             inc_vote(item_id)
         finally:
             st.session_state.voted_ids.add(item_id)
         return
 
-    # If turning OFF
+    # turning OFF (unvote)
     if item_id in st.session_state.voted_ids:
         try:
             dec_vote(item_id)
         finally:
             st.session_state.voted_ids.remove(item_id)
 
-# Header — compute from session (updated by the callback above instantly)
-remaining = MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)
-remaining = max(0, remaining)
+# Header — computed from session (updated by callback immediately)
+remaining = max(0, MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids))
 st.subheader(f"All initiatives · Votes remaining: {remaining}")
 
 if df_list.empty:
     st.info("No initiatives yet. Add one above.")
 else:
-    # Render stable rows (no reordering)
+    # Stable order (insert order), one widget per row (great on mobile)
     for _, r in df_list.iterrows():
         item_id = str(r["id"])
         key = f"cb-{item_id}"
+        name = str(r.get("initiative", "(untitled)")).strip() or "(untitled)"
+        cat  = str(r.get("category", "Other")).strip() or "Other"
+        label = f"{name} · {cat}"  # single-line label for mobile
 
-        # Row text
-        st.markdown(
-            f"<div class='vote-row'>"
-            f"<div class='vote-name'>{r.get('initiative','(untitled)')}</div>"
-            f"<div class='vote-cat'>{r.get('category','Other')}</div>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-        # Checkbox right below the row text; uses callback to enforce logic
         st.checkbox(
-            "Vote",
+            label,
             key=key,
             value=st.session_state[key],
             on_change=handle_toggle,
             args=(item_id, key),
+            help="One vote per initiative. Max 5 total (toggle to unvote).",
         )
 
 st.divider()
@@ -179,7 +188,7 @@ render_results(df_list)
 
 if st.session_state.live_mode:
     start = time.time()
-    while time.time() - start < 600:  # 10 minutes; adjust as needed
+    while time.time() - start < 600:  # 10 minutes
         time.sleep(1)
         render_results(fetch_df_raw())
 
