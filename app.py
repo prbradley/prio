@@ -1,4 +1,8 @@
-# app.py — In-Room Prioritization (Supabase) — simple list + 5-vote cap + live results
+# app.py — In-Room Prioritization (Supabase)
+# - 5 votes per person (per device/session)
+# - One vote per initiative (toggle Vote/Unvote)
+# - Mobile-friendly one-line voting rows
+# - Live results without flicker
 
 import os, uuid, time
 import pandas as pd
@@ -8,7 +12,7 @@ from supabase import create_client, Client
 # ---------- Page setup ----------
 st.set_page_config(page_title="In-Room Prioritization", layout="wide")
 st.title("🏔️ In-Room Initiative Prioritization")
-st.caption("Add initiatives, vote up to 5 times per person. Live results with no flicker.")
+st.caption("Vote up to 5 times per person. One vote per initiative. Toggle to unvote. Live results with no flicker.")
 
 # ---------- Secrets / clients ----------
 SB_URL = st.secrets.get("SUPABASE_URL")
@@ -16,7 +20,6 @@ SB_KEY = st.secrets.get("SUPABASE_ANON_KEY")
 if not SB_URL or not SB_KEY:
     st.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in Streamlit secrets.")
     st.stop()
-
 sb: Client = create_client(SB_URL, SB_KEY)
 
 # ---------- Config ----------
@@ -26,20 +29,16 @@ CATEGORIES = [
     "Communication","Culture","Cross Functional Friction","Other"
 ]
 
-# Initialize session vote counter
-if "votes_cast" not in st.session_state:
-    st.session_state.votes_cast = 0
+# Track which initiative IDs this viewer has voted for (per device/session)
+if "voted_ids" not in st.session_state:
+    st.session_state.voted_ids = set()
 
 # ---------- Data access ----------
 def fetch_df_raw() -> pd.DataFrame:
-    """Read all initiatives ordered by insert time."""
     res = sb.table("initiatives").select("*").order("inserted_at").execute()
     df = pd.DataFrame(res.data or [])
     if df.empty:
-        df = pd.DataFrame(columns=[
-            "id","initiative","category","votes","inserted_at","updated_at"
-        ])
-    # Ensure expected columns exist
+        df = pd.DataFrame(columns=["id","initiative","category","votes"])
     if "category" not in df.columns:
         df["category"] = "Other"
     if "votes" not in df.columns:
@@ -56,8 +55,11 @@ def add_initiative(name: str, category: str):
     sb.table("initiatives").insert(row).execute()
 
 def inc_vote(row_id: str):
-    # Uses your Supabase SQL RPC: inc_vote(row_id uuid)
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
+
+def dec_vote(row_id: str):
+    # Requires dec_vote(row_id uuid) RPC in Supabase (see SQL below)
+    sb.rpc("dec_vote", {"row_id": row_id}).execute()
 
 # ---------- Add initiative (always visible: name + category) ----------
 st.subheader("Add an initiative")
@@ -74,49 +76,60 @@ if col_btn.button("Add"):
 
 st.divider()
 
-# ---------- Voting section (flat list, sorted by votes) ----------
-st.subheader(f"All initiatives · Votes remaining: {MAX_VOTES_PER_PERSON - st.session_state.votes_cast}")
-remaining = max(0, MAX_VOTES_PER_PERSON - st.session_state.votes_cast)
-vote_disabled = remaining <= 0
+# ---------- Voting section (flat, one line per item; sorted by votes) ----------
+remaining = MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)
+remaining = max(0, remaining)
+st.subheader(f"All initiatives · Votes remaining: {remaining}")
 
 df_list = fetch_df_raw()
 
 if df_list.empty:
     st.info("No initiatives yet. Add one above.")
 else:
-    # Always show everything; sort by votes desc, then most recently updated
-    df_list = df_list.sort_values(by=["votes", "updated_at"], ascending=[False, False]).reset_index(drop=True)
+    # Sort by votes desc, then name asc
+    df_list = df_list.sort_values(by=["votes", "initiative"], ascending=[False, True]).reset_index(drop=True)
 
     for _, row in df_list.iterrows():
-        name = str(row.get("initiative", "(untitled)"))
-        cat  = str(row.get("category", "Other"))
-        vts  = int(row.get("votes", 0))
+        item_id = str(row["id"])
+        name    = str(row.get("initiative","(untitled)"))
+        cat     = str(row.get("category","Other"))
+        vts     = int(row.get("votes", 0))
 
-        # Columns: name | category+votes | vote button | status
-        c1, c2, c3, c4 = st.columns([6, 3, 1, 2])
+        # One-line layout: name | category + ⭐votes | button
+        c1, c2, c3 = st.columns([7, 3, 2])
+        # Keep text concise to help mobile stay on one line
         c1.markdown(f"**{name}**")
-        c2.markdown(f"_Category:_ **{cat}** &nbsp;·&nbsp; ⭐ **{vts}**")
+        c2.markdown(f"{cat} · ⭐ **{vts}**")
 
-        # Vote button
-        if c3.button("⬆️ Vote", key=f"vote-{row['id']}", disabled=vote_disabled):
-            if st.session_state.votes_cast < MAX_VOTES_PER_PERSON:
-                inc_vote(row["id"])
-                st.session_state.votes_cast += 1
-                st.toast(f"Vote recorded. {MAX_VOTES_PER_PERSON - st.session_state.votes_cast} remaining.")
+        already_voted = item_id in st.session_state.voted_ids
+        label = "Unvote" if already_voted else "⬆️ Vote"
+        disabled = False if already_voted else (remaining <= 0)
+
+        if c3.button(label, key=f"vote-toggle-{item_id}", disabled=disabled):
+            if already_voted:
+                # Unvote: decrement in DB and remove from session
+                try:
+                    dec_vote(item_id)
+                finally:
+                    st.session_state.voted_ids.discard(item_id)
+                st.toast(f"Removed vote. {MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)} remaining.")
                 st.rerun()
             else:
-                st.warning("You’ve used all 5 votes on this device.")
-
-        # Disabled indicator when out of votes
-        if vote_disabled:
-            c4.write("🚫 No votes left")
+                if remaining <= 0:
+                    st.warning("You’ve used all 5 votes on this device.")
+                else:
+                    try:
+                        inc_vote(item_id)
+                    finally:
+                        st.session_state.voted_ids.add(item_id)
+                    st.toast(f"Vote recorded. {MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)} remaining.")
+                    st.rerun()
 
 st.divider()
 
 # ---------- Live Results (flicker-free placeholder updates) ----------
 st.subheader("Live Results")
 
-# Toggle to pause live refresh if needed
 if "live_mode" not in st.session_state:
     st.session_state.live_mode = True
 st.session_state.live_mode = st.toggle("Live mode (1s updates)", value=st.session_state.live_mode)
@@ -128,21 +141,20 @@ def render_results(df_in: pd.DataFrame):
         with placeholder.container():
             st.info("No initiatives yet.")
         return
-    # Simple leaderboard = sort by votes desc, then updated_at desc
+    # Table: Initiative | Category | Votes (no updated_at)
     df = df_in.copy()
-    df = df.sort_values(by=["votes","updated_at"], ascending=[False, False])
-    show = ["initiative","category","votes","updated_at"]
-    show = [c for c in show if c in df.columns]
+    df = df.sort_values(by=["votes","initiative"], ascending=[False, True])
+    show = [c for c in ["initiative","category","votes"] if c in df.columns]
     with placeholder.container():
         st.dataframe(df[show], use_container_width=True, hide_index=True)
 
-# Initial static paint
+# Initial paint
 render_results(df_list)
 
-# Gentle 1s live loop: only redraws the results table (no buttons inside)
+# Live loop updates only the results table (no widget duplication)
 if st.session_state.live_mode:
     start = time.time()
-    max_seconds = 120  # safety cap; toggle off/on to continue, or increase
+    max_seconds = 120
     while time.time() - start < max_seconds:
         time.sleep(1)
         render_results(fetch_df_raw())
@@ -152,8 +164,8 @@ else:
 # ---------- Export (single widget per run) ----------
 latest = fetch_df_raw()
 if not latest.empty:
-    latest = latest.sort_values(by=["votes","updated_at"], ascending=[False, False])
-    present = [c for c in ["initiative","category","votes","updated_at"] if c in latest.columns]
+    latest = latest.sort_values(by=["votes","initiative"], ascending=[False, True])
+    present = [c for c in ["initiative","category","votes"] if c in latest.columns]
     csv_bytes = latest[present].to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇️ Download Results (CSV)",
@@ -163,4 +175,4 @@ if not latest.empty:
         key="dl-results",
     )
 
-st.caption("Note: Vote limit is enforced per device/session. For stricter controls, add auth and per-user tracking in Supabase.")
+st.caption("Note: Vote limit is enforced per device/session. For stricter per-person limits across devices, add auth and server-side checks in Supabase.")
