@@ -19,12 +19,13 @@ if not SB_URL or not SB_KEY:
 
 sb: Client = create_client(SB_URL, SB_KEY)
 
+# OpenAI optional (only for clustering)
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 try:
     from openai import OpenAI
     oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 except Exception:
-    oai = None  # OpenAI optional (only for clustering)
+    oai = None
 
 # ---------- Weights (tweakable) ----------
 DEFAULT_WEIGHTS = {"Impact": 0.40, "Alignment": 0.35, "Effort": -0.15, "Risk": -0.10}
@@ -50,7 +51,6 @@ def fetch_df_raw() -> pd.DataFrame:
         return pd.DataFrame(columns=_cols())
     return df
 
-# cache reads lightly to reduce jitter; we’ll bypass cache when we need a fresh read
 @st.cache_data(ttl=0.5)
 def fetch_df_cached() -> pd.DataFrame:
     return fetch_df_raw()
@@ -71,7 +71,7 @@ def update_ratings(row_id, impact, alignment, effort, risk):
     }).eq("id", row_id).execute()
 
 def inc_vote(row_id):
-    # uses the inc_vote RPC you created in Supabase SQL
+    # uses your Supabase SQL RPC: inc_vote(row_id uuid)
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
 def set_cluster(row_id, label):
@@ -190,15 +190,13 @@ def score_row(r):
 
 st.subheader("Live Leaderboard")
 
-# Live mode UI state
 if "live_mode" not in st.session_state:
     st.session_state.live_mode = True
-
 st.session_state.live_mode = st.toggle("Live mode (1s updates)", value=st.session_state.live_mode)
 
 placeholder = st.empty()
 
-def render_leaderboard(df_in: pd.DataFrame):
+def render_leaderboard_only(df_in: pd.DataFrame):
     if df_in.empty:
         with placeholder.container():
             st.info("No initiatives yet.")
@@ -213,25 +211,34 @@ def render_leaderboard(df_in: pd.DataFrame):
     present = [c for c in show_cols if c in df.columns]
     with placeholder.container():
         st.dataframe(df[present], use_container_width=True, hide_index=True)
-        st.download_button(
-            "⬇️ Download Results (CSV)",
-            data=df[present].to_csv(index=False),
-            file_name="prioritization_results.csv",
-            mime="text/csv",
-            key="dl-results",
-        )
 
-# Initial paint using cached data (fast)
-render_leaderboard(fetch_df_cached())
-
-# Gentle polling loop (no hard refresh). Runs for up to 2 minutes at a time so it doesn't block forever.
+# Live loop: only redraw the table (no buttons inside, so no duplicate widget keys)
 if st.session_state.live_mode:
     start = time.time()
-    max_seconds = 120  # safety cap; un-toggle/re-toggle to continue beyond 2 min
+    max_seconds = 120  # safety cap; toggle off/on to continue, or increase
     while time.time() - start < max_seconds:
-        time.sleep(1)                # wait 1s
-        df_fresh = fetch_df_raw()    # bypass cache for the newest view
-        render_leaderboard(df_fresh)
-        # If user turns live mode off (on next rerun), loop will not restart.
+        render_leaderboard_only(fetch_df_raw())  # bypass cache for freshest view
+        time.sleep(1)
+else:
+    # Single static render if live mode is off
+    render_leaderboard_only(fetch_df_cached())
 
-st.caption("Tip: Live mode only re-renders the leaderboard container, so forms & expanders stay open without flicker.")
+# Single download button created once per run (no duplicate keys)
+latest = fetch_df_raw()
+if not latest.empty:
+    latest["Score"] = latest.apply(score_row, axis=1)
+    latest = latest.sort_values(by=["Score","votes"], ascending=[False, False])
+    present = [c for c in [
+        "initiative","cluster","impact","alignment","effort","risk","votes","Score",
+        "owner","category","updated_at"
+    ] if c in latest.columns]
+    csv_bytes = latest[present].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download Results (CSV)",
+        data=csv_bytes,
+        file_name="prioritization_results.csv",
+        mime="text/csv",
+        key="dl-results",
+    )
+
+st.caption("Tip: Only the leaderboard container updates every second, so forms & expanders stay open without flicker.")
