@@ -1,9 +1,8 @@
 # app.py — Prioritization (Supabase)
-# - 5 votes per person (per device/session)
-# - One vote per initiative (checkbox per row with inline label)
-# - Immediate validation & rollback on 6th vote
-# - Mobile-optimized single-line rows (ellipsis)
-# - Results table below (Initiative | Category | Votes)
+# - One big, full-width button per initiative (mobile-friendly)
+# - Green = selected (uses primary button styling + CSS override)
+# - 5 votes per person (per device/session), 1 per initiative, toggle to unvote
+# - Stable order; live results table below
 
 import os, uuid, time
 import pandas as pd
@@ -18,25 +17,38 @@ st.markdown(
 )
 st.caption("Add initiatives, vote up to 5 times.")
 
-# Mobile-optimized styling: keep checkbox labels on one line with ellipsis
+# ---------- Styling (make primary buttons green + full-width row feel) ----------
 st.markdown("""
 <style>
-/* Tighten global paddings a bit on small screens */
+/* Make 'primary' buttons green (selected state) */
+[data-testid="baseButton-primary"] {
+  background-color: #16a34a !important;   /* green-600 */
+  border-color: #15803d !important;       /* green-700 */
+}
+[data-testid="baseButton-primary"]:hover {
+  background-color: #15803d !important;
+  border-color: #166534 !important;
+}
+[data-testid="baseButton-primary"]:focus {
+  box-shadow: 0 0 0 0.2rem rgba(22,163,74,0.35) !important;
+}
+
+/* Slightly tighten padding on small screens */
 @media (max-width: 640px) {
-  .block-container { padding-top: 0.5rem; padding-left: 0.75rem; padding-right: 0.75rem; }
+  .block-container { padding-top: .5rem; padding-left: .75rem; padding-right: .75rem; }
 }
-/* Checkbox label in one line with ellipsis */
-[data-testid="stCheckbox"] label, [data-testid="stToggle"] label {
-  display: inline-block;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+
+/* Button label: single line with ellipsis so long names don't wrap */
+.stButton > button {
+  width: 100% !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  padding: .75rem .9rem !important;
+  font-weight: 600;
 }
-/* Slightly smaller text on mobile */
-@media (max-width: 640px) {
-  [data-testid="stCheckbox"] label, [data-testid="stToggle"] label { font-size: 0.95rem; }
-}
+.stButton { margin-bottom: .35rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,10 +77,8 @@ def fetch_df_raw() -> pd.DataFrame:
     df = pd.DataFrame(res.data or [])
     if df.empty:
         return pd.DataFrame(columns=["id","initiative","category","votes"])
-    if "category" not in df.columns:
-        df["category"] = "Other"
-    if "votes" not in df.columns:
-        df["votes"] = 0
+    if "category" not in df.columns: df["category"] = "Other"
+    if "votes" not in df.columns: df["votes"] = 0
     df["votes"] = pd.to_numeric(df["votes"], errors="coerce").fillna(0).astype(int)
     return df
 
@@ -84,10 +94,10 @@ def inc_vote(item_id: str):
     sb.rpc("inc_vote", {"row_id": item_id}).execute()
 
 def dec_vote(item_id: str):
-    # Ensure you have this RPC:
-    # create or replace function public.dec_vote(row_id uuid)
-    # returns void language sql as $$ update public.initiatives
-    # set votes = greatest(coalesce(votes,0)-1,0) where id=row_id; $$;
+    # Ensure you have this RPC in Supabase:
+    # create or replace function public.dec_vote(row_id uuid) returns void language sql as $$
+    #   update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
+    # $$;
     sb.rpc("dec_vote", {"row_id": item_id}).execute()
 
 # ---------- Add initiative ----------
@@ -105,63 +115,57 @@ if c3.button("Add"):
 
 st.divider()
 
-# ---------- Voting (single inline checkbox per row) ----------
+# ---------- Voting (one big button per initiative) ----------
 df_list = fetch_df_raw()
 
-# Initialize widget state for each row from session on first render
-for _, r in df_list.iterrows():
-    key = f"cb-{r['id']}"
-    if key not in st.session_state:
-        st.session_state[key] = (r["id"] in st.session_state.voted_ids)
-
-def handle_toggle(item_id: str, key: str):
-    """Enforce max 5 and 1 per initiative; update DB + session immediately."""
-    new_val = st.session_state[key]
-
-    if new_val:  # turning ON
-        if item_id in st.session_state.voted_ids:
-            return
-        if len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
-            # Reject and flip back off immediately
-            st.session_state[key] = False
-            st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
-            return
-        try:
-            inc_vote(item_id)
-        finally:
-            st.session_state.voted_ids.add(item_id)
-        return
-
-    # turning OFF (unvote)
-    if item_id in st.session_state.voted_ids:
-        try:
-            dec_vote(item_id)
-        finally:
-            st.session_state.voted_ids.remove(item_id)
-
-# Header — computed from session (updated by callback immediately)
+# Header — from session state
 remaining = max(0, MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids))
 st.subheader(f"All initiatives · Votes remaining: {remaining}")
 
 if df_list.empty:
     st.info("No initiatives yet. Add one above.")
 else:
-    # Stable order (insert order), one widget per row (great on mobile)
     for _, r in df_list.iterrows():
         item_id = str(r["id"])
-        key = f"cb-{item_id}"
+        selected = (item_id in st.session_state.voted_ids)
+
+        # Full-width button with "Name · Category" as its label
         name = str(r.get("initiative", "(untitled)")).strip() or "(untitled)"
         cat  = str(r.get("category", "Other")).strip() or "Other"
-        label = f"{name} · {cat}"  # single-line label for mobile
+        label = f"{name} · {cat}"
 
-        st.checkbox(
+        # Render as 'primary' (green) when selected; 'secondary' otherwise
+        clicked = st.button(
             label,
-            key=key,
-            value=st.session_state[key],
-            on_change=handle_toggle,
-            args=(item_id, key),
-            help="One vote per initiative. Max 5 total (toggle to unvote).",
+            key=f"btn-{item_id}",
+            type=("primary" if selected else "secondary"),
+            use_container_width=True,
+            help="Tap to select/unselect. Max 5 selections.",
         )
+
+        if clicked:
+            # Toggle logic with cap enforcement
+            if selected:
+                # Unvote
+                try:
+                    dec_vote(item_id)
+                finally:
+                    st.session_state.voted_ids.discard(item_id)
+            else:
+                # New selection
+                if len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
+                    st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
+                    # Do not add; leave as unselected
+                else:
+                    try:
+                        inc_vote(item_id)
+                    finally:
+                        st.session_state.voted_ids.add(item_id)
+            # No explicit rerun needed; on next render, button style reflects state
+
+# Recompute and show remaining after any clicks processed in this run
+remaining = max(0, MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids))
+st.write(f"**Votes remaining: {remaining}**")
 
 st.divider()
 
