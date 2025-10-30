@@ -1,14 +1,19 @@
 import os, uuid, time, json
 import pandas as pd
 import streamlit as st
+from supabase import create_client, Client
 from openai import OpenAI
 
 st.set_page_config(page_title="In-Room Prioritization", layout="wide")
-st.title("🏔️ In-Room Initiative Prioritization")
-st.caption("Rate → Vote → See live ranking. Use 1–5 for ratings. Votes are dot-votes.")
+st.title("🏔️ In-Room Initiative Prioritization (Supabase)")
+st.caption("Shared backend so everyone sees the same data. Rate → Vote → Live ranking.")
 
-# --- Config ---
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# ---------------- Config & Clients ----------------
+SB_URL = st.secrets.get("SUPABASE_URL")
+SB_KEY = st.secrets.get("SUPABASE_ANON_KEY")
+sb: Client = create_client(SB_URL, SB_KEY)
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 DEFAULT_WEIGHTS = {"Impact": 0.4, "Alignment": 0.35, "Effort": -0.15, "Risk": -0.10}
@@ -19,66 +24,49 @@ w_effort   = st.sidebar.slider("Effort weight",  -1.0, 0.0, DEFAULT_WEIGHTS["Eff
 w_risk     = st.sidebar.slider("Risk weight",    -1.0, 0.0, DEFAULT_WEIGHTS["Risk"], 0.05)
 WEIGHTS = {"Impact": w_impact, "Alignment": w_align, "Effort": w_effort, "Risk": w_risk}
 
-# --- Load data ---
-def load_csv(uploaded):
-    df = pd.read_csv(uploaded).fillna("")
-    if "Votes" not in df.columns:
-        df["Votes"] = 0
-    # normalize expected columns if user used template
-    rename = {
-        "Impact (1-5)": "Impact",
-        "Strategic Alignment (1-5)": "Alignment",
-        "Effort (1-5)": "Effort",
-        "Risk (1-5)": "Risk",
-    }
-    for k,v in rename.items():
-        if k in df.columns:
-            df.rename(columns={k:v}, inplace=True)
-    for col in ["Impact","Alignment","Effort","Risk","Votes"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    if "id" not in df.columns:
-        df["id"] = [str(uuid.uuid4()) for _ in range(len(df))]
+# Simple polling so all devices refresh every ~2s
+st.markdown("<meta http-equiv='refresh' content='2'>", unsafe_allow_html=True)
+
+# ---------------- Data Access ----------------
+def fetch_df() -> pd.DataFrame:
+    res = sb.table("initiatives").select("*").order("inserted_at").execute()
+    df = pd.DataFrame(res.data or [])
+    if df.empty:
+        df = pd.DataFrame(columns=[
+            "id","initiative","description","owner","category",
+            "impact","alignment","effort","risk","votes","cluster",
+            "inserted_at","updated_at"
+        ])
     return df
 
-if "data" not in st.session_state:
-    st.session_state.data = pd.DataFrame(columns=[
-        "id","Initiative","Short Description","Owner / Team","Category (Run / CI / Strategic)",
-        "Impact","Alignment","Effort","Risk","Votes","Cluster"
-    ])
+def add_initiative(name, desc, owner, category):
+    row = {
+        "id": str(uuid.uuid4()),
+        "initiative": name, "description": desc, "owner": owner,
+        "category": category, "impact": None, "alignment": None,
+        "effort": None, "risk": None, "votes": 0, "cluster": ""
+    }
+    sb.table("initiatives").insert(row).execute()
 
-uploaded = st.file_uploader("Upload initiatives CSV (use the template)", type=["csv"])
-if uploaded:
-    st.session_state.data = load_csv(uploaded)
+def update_ratings(row_id, impact, alignment, effort, risk):
+    sb.table("initiatives").update({
+        "impact": int(impact), "alignment": int(alignment),
+        "effort": int(effort), "risk": int(risk)
+    }).eq("id", row_id).execute()
 
-# --- Add new initiative (optional in-room) ---
-with st.expander("➕ Add an initiative"):
-    c1,c2 = st.columns([3,2])
-    name = c1.text_input("Initiative")
-    owner = c2.text_input("Owner / Team")
-    desc = st.text_area("Short Description")
-    cat = st.selectbox("Category", ["Run","CI","Strategic","Other"])
-    if st.button("Add"):
-        if name.strip():
-            new = {
-                "id": str(uuid.uuid4()),
-                "Initiative": name.strip(),
-                "Short Description": desc.strip(),
-                "Owner / Team": owner.strip(),
-                "Category (Run / CI / Strategic)": cat,
-                "Impact": None, "Alignment": None, "Effort": None, "Risk": None, "Votes": 0, "Cluster": ""
-            }
-            st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame([new])], ignore_index=True)
-            st.success("Added.")
+def inc_vote(row_id):
+    sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
-# --- AI clustering (optional) ---
+def set_cluster(row_id, label):
+    sb.table("initiatives").update({"cluster": label}).eq("id", row_id).execute()
+
+# ---------------- Optional AI clustering ----------------
 def ai_cluster(labels):
-    if not client:
-        st.warning("Set OPENAI_API_KEY to enable clustering.")
+    if not client or not labels:
         return {}
     prompt = f"""
-Group similar initiatives (list below) into up to 7 clusters. 
-Return JSON: {{"clusters":[{{"label": "string", "items": ["initiative name exactly"]}}]}}
+Group similar initiatives (exact names below) into up to 7 clusters.
+Return JSON: {{"clusters":[{{"label":"string","items":["exact initiative name"]}}]}}
 List:
 {chr(10).join(labels)}
 """
@@ -98,55 +86,98 @@ List:
     except Exception:
         return {}
 
+# ---------------- Upload (optional seeding) ----------------
+with st.expander("📥 Seed from CSV (optional)"):
+    st.caption("Upload once; rows will be inserted into Supabase.")
+    up = st.file_uploader("CSV with columns: Initiative, Short Description, Owner / Team, Category (Run / CI / Strategic)", type=["csv"])
+    if up and st.button("Insert CSV rows"):
+        seed = pd.read_csv(up).fillna("")
+        for _, r in seed.iterrows():
+            add_initiative(
+                r.get("Initiative","").strip(),
+                r.get("Short Description","").strip(),
+                r.get("Owner / Team","").strip(),
+                r.get("Category (Run / CI / Strategic)","Other").strip()
+            )
+        st.success("Inserted.")
+
+# ---------------- Add initiative ----------------
+with st.expander("➕ Add initiative"):
+    c1,c2 = st.columns([3,2])
+    name = c1.text_input("Initiative")
+    owner = c2.text_input("Owner / Team")
+    desc = st.text_area("Short Description")
+    cat = st.selectbox("Category", ["Run","CI","Strategic","Other"])
+    if st.button("Add"):
+        if name.strip():
+            add_initiative(name.strip(), desc.strip(), owner.strip(), cat)
+            st.success("Added.")
+
+# ---------------- Cluster (optional) ----------------
 c1,c2 = st.columns([1,3])
 if c1.button("🤖 Cluster similar items"):
-    names = st.session_state.data["Initiative"].astype(str).tolist()
+    df_now = fetch_df()
+    names = df_now["initiative"].astype(str).tolist()
     cmap = ai_cluster(names)
     if cmap:
-        st.session_state.data["Cluster"] = st.session_state.data["Initiative"].map(lambda x: cmap.get(str(x),""))
+        for _, r in df_now.iterrows():
+            lab = cmap.get(str(r["initiative"]), "")
+            if lab:
+                set_cluster(r["id"], lab)
         st.success("Clustered.")
     else:
-        st.info("No clusters or API key missing.")
+        st.info("No clusters (or OpenAI key not set).")
 
-# --- Ratings & voting ---
+# ---------------- Rate & Vote ----------------
 st.subheader("Rate & Vote")
-for idx, row in st.session_state.data.iterrows():
-    with st.expander(f"📌 {row.get('Initiative','(untitled)')}"):
-        c1,c2,c3,c4,c5 = st.columns([2,1,1,1,1])
-        c1.write(row.get("Short Description",""))
-        impact  = c2.number_input("Impact (1-5)",   min_value=1, max_value=5, value=int(row["Impact"]) if pd.notna(row["Impact"]) else 3, key=f"imp-{row['id']}")
-        align   = c3.number_input("Alignment (1-5)",min_value=1, max_value=5, value=int(row["Alignment"]) if pd.notna(row["Alignment"]) else 3, key=f"aln-{row['id']}")
-        effort  = c4.number_input("Effort (1-5)",   min_value=1, max_value=5, value=int(row["Effort"]) if pd.notna(row["Effort"]) else 3, key=f"eff-{row['id']}")
-        risk    = c5.number_input("Risk (1-5)",     min_value=1, max_value=5, value=int(row["Risk"]) if pd.notna(row["Risk"]) else 3, key=f"rsk-{row['id']}")
-        st.session_state.data.loc[idx, ["Impact","Alignment","Effort","Risk"]] = [impact,align,effort,risk]
-        b1,b2 = st.columns([1,9])
-        if b1.button("⬆️ Vote", key=f"vote-{row['id']}"):
-            st.session_state.data.loc[idx, "Votes"] = (row["Votes"] or 0) + 1
-            time.sleep(0.05)
-            st.rerun()
+df = fetch_df()
 
-# --- Leaderboard ---
-def score(r):
-    i,a,e,k = r["Impact"], r["Alignment"], r["Effort"], r["Risk"]
+if df.empty:
+    st.info("No initiatives yet. Add one above or seed from CSV.")
+else:
+    for _, row in df.iterrows():
+        with st.expander(f"📌 {row.get('initiative','(untitled)')}"):
+            c1,c2,c3,c4,c5 = st.columns([2,1,1,1,1])
+            c1.write(row.get("description",""))
+            impact  = c2.number_input("Impact (1-5)",   1, 5, int(row["impact"]) if pd.notna(row["impact"]) else 3, key=f"imp-{row['id']}")
+            align   = c3.number_input("Alignment (1-5)",1, 5, int(row["alignment"]) if pd.notna(row["alignment"]) else 3, key=f"aln-{row['id']}")
+            effort  = c4.number_input("Effort (1-5)",   1, 5, int(row["effort"]) if pd.notna(row["effort"]) else 3, key=f"eff-{row['id']}")
+            risk    = c5.number_input("Risk (1-5)",     1, 5, int(row["risk"]) if pd.notna(row["risk"]) else 3, key=f"rsk-{row['id']}")
+
+            col_a, col_b = st.columns([1,9])
+            if col_a.button("💾 Save", key=f"save-{row['id']}"):
+                update_ratings(row["id"], impact, align, effort, risk)
+                st.toast("Saved")
+
+            if col_a.button("⬆️ Vote", key=f"vote-{row['id']}-btn"):
+                inc_vote(row["id"])
+                st.toast("Voted")
+
+# ---------------- Leaderboard ----------------
+def score_row(r):
     parts = []
-    if pd.notna(i): parts.append(i*WEIGHTS["Impact"])
-    if pd.notna(a): parts.append(a*WEIGHTS["Alignment"])
-    if pd.notna(e): parts.append(e*WEIGHTS["Effort"])
-    if pd.notna(k): parts.append(k*WEIGHTS["Risk"])
+    if pd.notna(r.get("impact")):   parts.append(r["impact"]   * WEIGHTS["Impact"])
+    if pd.notna(r.get("alignment")):parts.append(r["alignment"]* WEIGHTS["Alignment"])
+    if pd.notna(r.get("effort")):   parts.append(r["effort"]   * WEIGHTS["Effort"])
+    if pd.notna(r.get("risk")):     parts.append(r["risk"]     * WEIGHTS["Risk"])
     return sum(parts) if parts else 0.0
 
-df = st.session_state.data.copy()
-df["Score"] = df.apply(score, axis=1)
-df = df.sort_values(by=["Score","Votes"], ascending=[False,False])
+df = fetch_df()
+if not df.empty:
+    df["Score"] = df.apply(score_row, axis=1)
+    df = df.sort_values(by=["Score","votes"], ascending=[False,False])
 
-st.subheader("Live Leaderboard")
-show_cols = ["Initiative","Cluster","Impact","Alignment","Effort","Risk","Votes","Score","Owner / Team","Category (Run / CI / Strategic)"]
-present = [c for c in show_cols if c in df.columns]
-st.dataframe(df[present], use_container_width=True, hide_index=True)
+    st.subheader("Live Leaderboard")
+    show_cols = [
+        "initiative","cluster","impact","alignment","effort","risk","votes","Score",
+        "owner","category","updated_at"
+    ]
+    present = [c for c in show_cols if c in df.columns]
+    st.dataframe(df[present], use_container_width=True, hide_index=True)
 
-st.download_button(
-    "⬇️ Download Results (CSV)",
-    data=df.to_csv(index=False),
-    file_name="prioritization_results.csv",
-    mime="text/csv"
-)
+    st.download_button(
+        "⬇️ Download Results (CSV)",
+        data=df[present].to_csv(index=False),
+        file_name="prioritization_results.csv",
+        mime="text/csv"
+    )
