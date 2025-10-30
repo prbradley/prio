@@ -1,7 +1,6 @@
 # app.py — Prioritization (Supabase)
 # - One big, full-width button per initiative (mobile-friendly)
-# - Soft green selected state (theme override)
-# - Shows only initiative name (no category)
+# - Soft green selected state, warm neutral unselected state
 # - 5 votes per person (per device/session), toggle to unvote
 # - Live results below
 
@@ -18,24 +17,34 @@ st.markdown(
 )
 st.caption("Add initiatives, vote up to 5 times.")
 
-# ---------- Styling (green selected state; full-width rows) ----------
+# ---------- Styling (softer neutrals, green highlight) ----------
 st.markdown("""
 <style>
 :root { --primary-color: #16a34a; } /* force green */
+
+/* Selected (primary) buttons: soft emerald gradient */
 button[kind="primary"], [data-testid="baseButton-primary"] {
   background: linear-gradient(180deg, #d1fae5 0%, #a7f3d0 100%) !important;
-  color: #065f46 !important;
+  color: #064e3b !important;
   border: 1px solid #6ee7b7 !important;
 }
 button[kind="primary"]:hover, [data-testid="baseButton-primary"]:hover {
   background: linear-gradient(180deg, #a7f3d0 0%, #86efac 100%) !important;
   border-color: #34d399 !important;
 }
+
+/* Unselected (secondary) buttons: soft neutral beige-gray */
 button[kind="secondary"], [data-testid="baseButton-secondary"] {
-  background: #f3f4f6 !important;
-  color: #111827 !important;
+  background: linear-gradient(180deg, #f9fafb 0%, #f3f4f6 100%) !important;
+  color: #1f2937 !important; /* dark gray text */
   border: 1px solid #e5e7eb !important;
 }
+button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
+  background: linear-gradient(180deg, #f3f4f6 0%, #e5e7eb 100%) !important;
+  border-color: #d1d5db !important;
+}
+
+/* Layout / typography */
 .stButton > button {
   width: 100% !important;
   text-align: left !important;
@@ -44,8 +53,9 @@ button[kind="secondary"], [data-testid="baseButton-secondary"] {
   text-overflow: ellipsis !important;
   padding: .75rem .9rem !important;
   font-weight: 600;
+  border-radius: 0.5rem !important;
 }
-.stButton { margin-bottom: .35rem; }
+.stButton { margin-bottom: .4rem; }
 @media (max-width: 640px) {
   .block-container { padding-top: .5rem; padding-left: .75rem; padding-right: .75rem; }
 }
