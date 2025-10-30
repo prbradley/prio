@@ -1,8 +1,9 @@
 # app.py — Prioritization (Supabase)
 # - One big, full-width button per initiative (mobile-friendly)
-# - Soft green shading when selected
-# - 5 votes per person (per device/session), 1 per initiative, toggle to unvote
-# - Stable order; live results below
+# - Soft green selected state (theme override)
+# - Shows only initiative name (no category)
+# - 5 votes per person (per device/session), toggle to unvote
+# - Live results below
 
 import os, uuid, time
 import pandas as pd
@@ -12,31 +13,29 @@ from supabase import create_client, Client
 # ---------- Page setup ----------
 st.set_page_config(page_title="Prioritization", layout="wide")
 st.markdown(
-    "<h1 style='display: flex; align-items: center; gap: 0.5rem;'>🏔️ Prioritization</h1>",
+    "<h1 style='display:flex;align-items:center;gap:.5rem;'>🏔️ Prioritization</h1>",
     unsafe_allow_html=True,
 )
 st.caption("Add initiatives, vote up to 5 times.")
 
-# ---------- Styling (pleasant selected shading; full-width row buttons) ----------
+# ---------- Styling (green selected state; full-width rows) ----------
 st.markdown("""
 <style>
-/* Unselected (secondary) buttons: neutral */
-[data-testid="baseButton-secondary"] {
-  background: #f3f4f6 !important;     /* gray-100 */
-  color: #111827 !important;           /* gray-900 */
-  border: 1px solid #e5e7eb !important;/* gray-200 */
+:root { --primary-color: #16a34a; } /* force green */
+button[kind="primary"], [data-testid="baseButton-primary"] {
+  background: linear-gradient(180deg, #d1fae5 0%, #a7f3d0 100%) !important;
+  color: #065f46 !important;
+  border: 1px solid #6ee7b7 !important;
 }
-/* Selected (primary) buttons: soft green gradient + readable text */
-[data-testid="baseButton-primary"] {
-  background: linear-gradient(180deg, #d1fae5 0%, #a7f3d0 100%) !important; /* emerald-100 -> emerald-200 */
-  color: #065f46 !important;            /* emerald-800 */
-  border: 1px solid #6ee7b7 !important; /* emerald-300 */
+button[kind="primary"]:hover, [data-testid="baseButton-primary"]:hover {
+  background: linear-gradient(180deg, #a7f3d0 0%, #86efac 100%) !important;
+  border-color: #34d399 !important;
 }
-[data-testid="baseButton-primary"]:hover {
-  background: linear-gradient(180deg, #a7f3d0 0%, #86efac 100%) !important; /* emerald-200 -> emerald-300 */
-  border-color: #34d399 !important;     /* emerald-400 */
+button[kind="secondary"], [data-testid="baseButton-secondary"] {
+  background: #f3f4f6 !important;
+  color: #111827 !important;
+  border: 1px solid #e5e7eb !important;
 }
-/* Full-width row look; single line with ellipsis */
 .stButton > button {
   width: 100% !important;
   text-align: left !important;
@@ -47,7 +46,6 @@ st.markdown("""
   font-weight: 600;
 }
 .stButton { margin-bottom: .35rem; }
-/* Tighter container on small screens */
 @media (max-width: 640px) {
   .block-container { padding-top: .5rem; padding-left: .75rem; padding-right: .75rem; }
 }
@@ -69,9 +67,11 @@ CATEGORIES = [
     "Communication","Culture","Cross Functional Friction","Other"
 ]
 
-# Track which initiative IDs this viewer has voted for
+# ---------- Session ----------
 if "voted_ids" not in st.session_state:
     st.session_state.voted_ids = set()
+if "df_list" not in st.session_state:
+    st.session_state.df_list = pd.DataFrame(columns=["id","initiative","category","votes"])
 
 # ---------- Data ----------
 def fetch_df_raw() -> pd.DataFrame:
@@ -79,9 +79,8 @@ def fetch_df_raw() -> pd.DataFrame:
     df = pd.DataFrame(res.data or [])
     if df.empty:
         return pd.DataFrame(columns=["id","initiative","category","votes"])
-    if "category" not in df.columns: df["category"] = "Other"
-    if "votes" not in df.columns: df["votes"] = 0
-    df["votes"] = pd.to_numeric(df["votes"], errors="coerce").fillna(0).astype(int)
+    df["category"] = df.get("category", "Other")
+    df["votes"] = pd.to_numeric(df.get("votes", 0), errors="coerce").fillna(0).astype(int)
     return df
 
 def add_initiative(name: str, category: str):
@@ -96,11 +95,11 @@ def inc_vote(item_id: str):
     sb.rpc("inc_vote", {"row_id": item_id}).execute()
 
 def dec_vote(item_id: str):
-    # Ensure you have this RPC in Supabase:
-    # create or replace function public.dec_vote(row_id uuid) returns void language sql as $$
-    #   update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
-    # $$;
     sb.rpc("dec_vote", {"row_id": item_id}).execute()
+
+# ---------- First load ----------
+if st.session_state.df_list.empty:
+    st.session_state.df_list = fetch_df_raw()
 
 # ---------- Add initiative ----------
 st.subheader("Add an initiative")
@@ -110,6 +109,7 @@ new_cat  = c2.selectbox("Category", CATEGORIES, index=CATEGORIES.index("Other"))
 if c3.button("Add"):
     if new_name.strip():
         add_initiative(new_name.strip(), new_cat)
+        st.session_state.df_list = fetch_df_raw()
         st.success(f"Added to {new_cat}.")
         st.rerun()
     else:
@@ -117,10 +117,8 @@ if c3.button("Add"):
 
 st.divider()
 
-# ---------- Voting (one big button per initiative) ----------
-df_list = fetch_df_raw()
-
-# Header — from session state
+# ---------- Voting (name only) ----------
+df_list = st.session_state.df_list
 remaining = max(0, MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids))
 st.subheader(f"All initiatives · Votes remaining: {remaining}")
 
@@ -130,41 +128,32 @@ else:
     for _, r in df_list.iterrows():
         item_id = str(r["id"])
         selected = (item_id in st.session_state.voted_ids)
-
-        # Full-width button with "Name · Category"
-        name = str(r.get("initiative", "(untitled)")).strip() or "(untitled)"
-        cat  = str(r.get("category", "Other")).strip() or "Other"
-        label = f"{name} · {cat}"
+        label = str(r.get("initiative", "(untitled)")).strip() or "(untitled)"
 
         clicked = st.button(
             label,
             key=f"btn-{item_id}",
             type=("primary" if selected else "secondary"),
             use_container_width=True,
-            help="Tap to select/unselect. Max 5 selections.",
         )
 
         if clicked:
-            # Toggle with cap enforcement
             if selected:
-                # Unvote
                 try:
                     dec_vote(item_id)
                 finally:
                     st.session_state.voted_ids.discard(item_id)
-                st.rerun()  # repaint now so green state clears
+                st.rerun()
             else:
                 if len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
                     st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
-                    # Do not add; leave as unselected
                 else:
                     try:
                         inc_vote(item_id)
                     finally:
                         st.session_state.voted_ids.add(item_id)
-                    st.rerun()  # repaint now so green state applies
+                    st.rerun()
 
-# Recompute and show remaining after any clicks processed
 remaining = max(0, MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids))
 st.write(f"**Votes remaining: {remaining}**")
 
@@ -172,33 +161,31 @@ st.divider()
 
 # ---------- Live Results ----------
 st.subheader("Live Results")
-
 if "live_mode" not in st.session_state:
     st.session_state.live_mode = True
 st.session_state.live_mode = st.toggle("Live mode (1s updates)", value=st.session_state.live_mode)
 
 placeholder = st.empty()
-
 def render_results(df_in: pd.DataFrame):
     if df_in.empty:
         with placeholder.container():
             st.info("No initiatives yet.")
         return
     df = df_in.copy().sort_values(by=["votes","initiative"], ascending=[False, True])
-    cols = ["initiative","category","votes"]
     with placeholder.container():
-        st.dataframe(df[cols], use_container_width=True, hide_index=True)
+        st.dataframe(df[["initiative","category","votes"]], use_container_width=True, hide_index=True)
 
 render_results(df_list)
-
 if st.session_state.live_mode:
     start = time.time()
-    while time.time() - start < 600:  # 10 minutes
+    while time.time() - start < 600:
         time.sleep(1)
-        render_results(fetch_df_raw())
+        fresh = fetch_df_raw()
+        st.session_state.df_list = fresh
+        render_results(fresh)
 
 # ---------- Export ----------
-latest = fetch_df_raw()
+latest = st.session_state.df_list if not st.session_state.df_list.empty else fetch_df_raw()
 if not latest.empty:
     latest = latest.sort_values(by=["votes","initiative"], ascending=[False, True])
     csv_bytes = latest[["initiative","category","votes"]].to_csv(index=False).encode("utf-8")
