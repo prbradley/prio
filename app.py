@@ -20,31 +20,31 @@ st.caption("Add initiatives, vote up to 5 times.")
 # ---------- Styling (softer neutrals, green highlight) ----------
 st.markdown("""
 <style>
-:root { --primary-color: #16a34a; } /* force green */
+:root { --primary-color: #16a34a; } /* keep green highlight */
 
 /* Selected (primary) buttons: soft emerald gradient */
 button[kind="primary"], [data-testid="baseButton-primary"] {
-  background: linear-gradient(180deg, #d1fae5 0%, #a7f3d0 100%) !important;
+  background: linear-gradient(180deg, #c7f9cc 0%, #9deeb3 100%) !important;
   color: #064e3b !important;
-  border: 1px solid #6ee7b7 !important;
+  border: 1px solid #7cd3a4 !important;
 }
 button[kind="primary"]:hover, [data-testid="baseButton-primary"]:hover {
-  background: linear-gradient(180deg, #a7f3d0 0%, #86efac 100%) !important;
-  border-color: #34d399 !important;
+  background: linear-gradient(180deg, #9deeb3 0%, #6edc96 100%) !important;
+  border-color: #4ade80 !important;
 }
 
-/* Unselected (secondary) buttons: soft neutral beige-gray */
+/* Unselected (secondary) buttons: muted gray-sage tone */
 button[kind="secondary"], [data-testid="baseButton-secondary"] {
-  background: linear-gradient(180deg, #f9fafb 0%, #f3f4f6 100%) !important;
-  color: #1f2937 !important; /* dark gray text */
-  border: 1px solid #e5e7eb !important;
+  background: linear-gradient(180deg, #e7ecef 0%, #d8e1e3 100%) !important;
+  color: #1f2937 !important;             /* dark gray text */
+  border: 1px solid #cbd5e1 !important;  /* slate-300 */
 }
 button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
-  background: linear-gradient(180deg, #f3f4f6 0%, #e5e7eb 100%) !important;
-  border-color: #d1d5db !important;
+  background: linear-gradient(180deg, #d8e1e3 0%, #c7d1d3 100%) !important;
+  border-color: #b8c2c4 !important;
 }
 
-/* Layout / typography */
+/* Full-width row look; single line with ellipsis */
 .stButton > button {
   width: 100% !important;
   text-align: left !important;
@@ -56,11 +56,17 @@ button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
   border-radius: 0.5rem !important;
 }
 .stButton { margin-bottom: .4rem; }
+
 @media (max-width: 640px) {
-  .block-container { padding-top: .5rem; padding-left: .75rem; padding-right: .75rem; }
+  .block-container {
+    padding-top: .5rem;
+    padding-left: .75rem;
+    padding-right: .75rem;
+  }
 }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ---------- Secrets / clients ----------
 SB_URL = st.secrets.get("SUPABASE_URL")
