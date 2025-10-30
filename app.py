@@ -11,7 +11,7 @@ import streamlit as st
 from supabase import create_client, Client
 
 # ---------- Page setup ----------
-st.set_page_config(page_title="D&D Prioritization", layout="wide")
+st.set_page_config(page_title="Prioritization", layout="wide")
 
 st.markdown(
     "<h1 style='display: flex; align-items: center; gap: 0.5rem;'>🏔️ D&D Prioritization</h1>",
