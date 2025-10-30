@@ -1,10 +1,8 @@
 # app.py — Prioritization (Supabase)
 # - 5 votes per person (per device/session)
 # - One vote per initiative (toggle via checkbox)
-# - Voting table: Initiative | Category | Your vote (no counts)
-# - Results table: Initiative | Category | Votes
-# - Live results without flicker; stable order in voting section
-# - Mobile-friendly rows; read-only text columns
+# - Immediate validation & rollback on 6th vote (no waiting)
+# - Stable order, live results, mobile-friendly-ish rows
 
 import os, uuid, time
 import pandas as pd
@@ -19,21 +17,14 @@ st.markdown(
 )
 st.caption("Add initiatives, vote up to 5 times.")
 
-# Compact, single-line rows on mobile for data editor
+# Light CSS to tighten spacing on small screens
 st.markdown("""
 <style>
-/* Keep cells on a single line and tighten padding for compact mobile view */
-[data-testid="stDataFrame"] table tbody tr td,
-[data-testid="stDataFrame"] table thead tr th {
-  white-space: nowrap;
-}
-@media (max-width: 640px) {
-  [data-testid="stDataFrame"] table td,
-  [data-testid="stDataFrame"] table th {
-    padding: 4px 6px !important;
-    font-size: 0.95rem !important;
-  }
-}
+.row { display:flex; align-items:center; gap:.5rem; padding:.25rem 0; }
+.row .name { flex: 1 1 auto; font-weight: 600; min-width: 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.row .meta { flex: 0 0 auto; opacity:.8; white-space:nowrap;}
+.row .chk  { flex: 0 0 auto; }
+@media (max-width:640px){ .row { gap:.35rem; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,8 +73,10 @@ def inc_vote(row_id: str):
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
 def dec_vote(row_id: str):
-    # Requires dec_vote(row_id uuid) RPC:
-    # update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id=row_id;
+    # Requires this RPC in Supabase:
+    # create or replace function public.dec_vote(row_id uuid) returns void language sql as $$
+    #   update public.initiatives set votes = greatest(coalesce(votes,0)-1,0) where id = row_id;
+    # $$;
     sb.rpc("dec_vote", {"row_id": row_id}).execute()
 
 # ---------- Add initiative (always visible: name + category) ----------
@@ -101,64 +94,72 @@ if col_btn.button("Add"):
 
 st.divider()
 
-# ---------- Voting section (table; fixed order; one-line per item; NO vote counts) ----------
+# ---------- Voting (checkbox per row with immediate validation) ----------
 df_list = fetch_df_raw()
 
-header_placeholder = st.empty()  # we'll fill this AFTER we see the edited checkboxes
+# Initialize per-row checkbox state to reflect current session votes
+for _, r in df_list.iterrows():
+    key = f"vote-{r['id']}"
+    if key not in st.session_state:
+        st.session_state[key] = (r["id"] in st.session_state.voted_ids)
+
+# Header with dynamic remaining (derived from session)
+remaining = MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)
+remaining = max(0, remaining)
+st.subheader(f"All initiatives · Votes remaining: {remaining}")
 
 if df_list.empty:
-    header_placeholder.subheader(f"All initiatives · Votes remaining: {MAX_VOTES_PER_PERSON}")
     st.info("No initiatives yet. Add one above.")
 else:
-    # Build table with a boolean "Your vote" column; index by id to keep stable identity
-    view = df_list[["initiative","category"]].copy()
-    view["Your vote"] = df_list["id"].apply(lambda x: x in st.session_state.voted_ids)
-    view.index = df_list["id"]
+    # Render each row manually to control behavior precisely
+    for _, r in df_list.iterrows():
+        item_id = str(r["id"])
+        key = f"vote-{item_id}"
+        checked = st.session_state.get(key, item_id in st.session_state.voted_ids)
 
-    edited = st.data_editor(
-        view,
-        num_rows="fixed",
-        use_container_width=True,
-        hide_index=True,
-        disabled=["initiative","category"],  # lock text columns; only checkbox is editable
-        column_config={
-            "initiative": st.column_config.TextColumn("Initiative", width="medium"),
-            "category": st.column_config.TextColumn("Category", width="small"),
-            "Your vote": st.column_config.CheckboxColumn(
-                "Vote",
-                help="Select up to 5. Unselect one to choose another.",
-            ),
-        },
-        column_order=["initiative","category","Your vote"],
-    )
+        # Row layout with HTML + a Streamlit checkbox right after it
+        st.markdown(f"""
+        <div class="row">
+          <div class="name">{r.get('initiative','(untitled)')}</div>
+          <div class="meta">{r.get('category','Other')}</div>
+          <div class="chk"></div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Compute remaining directly from the edited table (instant feedback)
-    edited_selected = {rid for rid, r in edited.iterrows() if bool(r["Your vote"])}
-    remaining_display = max(0, MAX_VOTES_PER_PERSON - len(edited_selected))
-    header_placeholder.subheader(f"All initiatives · Votes remaining: {remaining_display}")
+        # Place checkbox (right-justified) – will trigger a rerun on change
+        new_val = st.checkbox("Vote", key=key, value=checked)
 
-    # Determine diffs vs session
-    current_selected = set(st.session_state.voted_ids)
-    newly_selected   = edited_selected - current_selected
-    newly_deselected = current_selected - edited_selected
+        # Handle state transition
+        if new_val != checked:
+            # User toggled this checkbox
+            if new_val:  # attempting to add a vote
+                if item_id in st.session_state.voted_ids:
+                    # Already voted for this (shouldn't happen, but guard)
+                    st.session_state[key] = True
+                elif len(st.session_state.voted_ids) >= MAX_VOTES_PER_PERSON:
+                    # Over the cap: immediately roll back and warn
+                    st.session_state[key] = False
+                    st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
+                    st.experimental_rerun()
+                else:
+                    # OK to add
+                    try:
+                        inc_vote(item_id)
+                    finally:
+                        st.session_state.voted_ids.add(item_id)
+                        # keep checkbox True; no rerun needed
+            else:  # unvoting
+                if item_id in st.session_state.voted_ids:
+                    try:
+                        dec_vote(item_id)
+                    finally:
+                        st.session_state.voted_ids.discard(item_id)
+                        # keep checkbox False; no rerun needed
 
-    # Reject any change that would exceed the cap (immediate revert)
-    if len(current_selected) + len(newly_selected) - len(newly_deselected) > MAX_VOTES_PER_PERSON:
-        st.warning("You’ve reached the 5-vote limit. Unselect one to choose another.")
-        st.rerun()  # rerun ONLY on reject to reset the extra tick
-
-    # Apply allowed changes WITHOUT rerun (prevents flicker)
-    for rid in newly_selected:
-        try:
-            inc_vote(rid)
-        finally:
-            st.session_state.voted_ids.add(rid)
-
-    for rid in newly_deselected:
-        try:
-            dec_vote(rid)
-        finally:
-            st.session_state.voted_ids.discard(rid)
+    # Update remaining label after processing this pass
+    remaining = MAX_VOTES_PER_PERSON - len(st.session_state.voted_ids)
+    remaining = max(0, remaining)
+    st.write(f"**Votes remaining: {remaining}**")
 
 st.divider()
 
