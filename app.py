@@ -1,4 +1,4 @@
-# app.py — In-Room Prioritization (Supabase) — simplified voting + 5-vote cap
+# app.py — In-Room Prioritization (Supabase) — simple list + 5-vote cap + live results
 
 import os, uuid, time
 import pandas as pd
@@ -6,7 +6,7 @@ import streamlit as st
 from supabase import create_client, Client
 
 # ---------- Page setup ----------
-st.set_page_config(page_title="D&D Day 3 Prioritization", layout="wide")
+st.set_page_config(page_title="In-Room Prioritization", layout="wide")
 st.title("🏔️ In-Room Initiative Prioritization")
 st.caption("Add initiatives, vote up to 5 times per person. Live results with no flicker.")
 
@@ -32,24 +32,25 @@ if "votes_cast" not in st.session_state:
 
 # ---------- Data access ----------
 def fetch_df_raw() -> pd.DataFrame:
+    """Read all initiatives ordered by insert time."""
     res = sb.table("initiatives").select("*").order("inserted_at").execute()
     df = pd.DataFrame(res.data or [])
     if df.empty:
         df = pd.DataFrame(columns=[
             "id","initiative","category","votes","inserted_at","updated_at"
         ])
-    # Normalize columns that might be missing
+    # Ensure expected columns exist
     if "category" not in df.columns:
         df["category"] = "Other"
     if "votes" not in df.columns:
         df["votes"] = 0
     return df
 
-def add_initiative(name: str):
+def add_initiative(name: str, category: str):
     row = {
         "id": str(uuid.uuid4()),
         "initiative": name,
-        "category": "Other",   # single-field add: default category
+        "category": category,
         "votes": 0
     }
     sb.table("initiatives").insert(row).execute()
@@ -58,23 +59,14 @@ def inc_vote(row_id: str):
     # Uses your Supabase SQL RPC: inc_vote(row_id uuid)
     sb.rpc("inc_vote", {"row_id": row_id}).execute()
 
-# ---------- Top: Add initiative (always visible, single field) ----------
+# ---------- Add initiative (always visible: name + category) ----------
 st.subheader("Add an initiative")
-new_name = st.text_input("Initiative name", placeholder="e.g., Improve handoffs between eComm and Retail")
-new_cat = st.selectbox("Category", [
-    "Operating Model","Change Fatigue","Unclear Accountabilities","Prioritization",
-    "Communication","Culture","Cross Functional Friction","Other"
-])
-add_cols = st.columns([1, 6])
-if add_cols[0].button("Add"):
+col_name, col_cat, col_btn = st.columns([5, 3, 1])
+new_name = col_name.text_input("Initiative name", placeholder="e.g., Improve handoffs between eComm and Retail")
+new_cat = col_cat.selectbox("Category", CATEGORIES, index=CATEGORIES.index("Other"))
+if col_btn.button("Add"):
     if new_name.strip():
-        row = {
-            "id": str(uuid.uuid4()),
-            "initiative": new_name.strip(),
-            "category": new_cat,
-            "votes": 0
-        }
-        sb.table("initiatives").insert(row).execute()
+        add_initiative(new_name.strip(), new_cat)
         st.success(f"Added to {new_cat}.")
         st.rerun()
     else:
@@ -82,39 +74,42 @@ if add_cols[0].button("Add"):
 
 st.divider()
 
-# ---------- Voting section (all items with Vote buttons) ----------
-st.subheader(f"All items · Votes remaining: {MAX_VOTES_PER_PERSON - st.session_state.votes_cast}")
+# ---------- Voting section (flat list, sorted by votes) ----------
+st.subheader(f"All initiatives · Votes remaining: {MAX_VOTES_PER_PERSON - st.session_state.votes_cast}")
 remaining = max(0, MAX_VOTES_PER_PERSON - st.session_state.votes_cast)
 vote_disabled = remaining <= 0
 
 df_list = fetch_df_raw()
 
-# Optional: show items grouped by the fixed category list (including any "Other")
-ordered_cats = [c for c in CATEGORIES if c in df_list["category"].unique()] + \
-               [c for c in df_list["category"].unique() if c not in CATEGORIES]
-
 if df_list.empty:
     st.info("No initiatives yet. Add one above.")
 else:
-    for cat in ordered_cats:
-        cat_df = df_list[df_list["category"] == cat]
-        if cat_df.empty:
-            continue
-        with st.expander(f"📂 {cat}  ({len(cat_df)})", expanded=True if cat in ("Other",) else False):
-            for _, row in cat_df.sort_values(by="updated_at", ascending=False).iterrows():
-                cols = st.columns([8, 1, 1])
-                cols[0].markdown(f"**{row.get('initiative','(untitled)')}**  ·  ⭐ {int(row.get('votes',0))}")
-                if cols[1].button("⬆️ Vote", key=f"vote-{row['id']}", disabled=vote_disabled):
-                    if st.session_state.votes_cast < MAX_VOTES_PER_PERSON:
-                        inc_vote(row["id"])
-                        st.session_state.votes_cast += 1
-                        st.toast(f"Vote recorded. {MAX_VOTES_PER_PERSON - st.session_state.votes_cast} left.")
-                        st.rerun()
-                    else:
-                        st.warning("You’ve used all 5 votes on this device.")
-                # Optional: a small disabled indicator when out of votes
-                if vote_disabled:
-                    cols[2].write("No votes left")
+    # Always show everything; sort by votes desc, then most recently updated
+    df_list = df_list.sort_values(by=["votes", "updated_at"], ascending=[False, False]).reset_index(drop=True)
+
+    for _, row in df_list.iterrows():
+        name = str(row.get("initiative", "(untitled)"))
+        cat  = str(row.get("category", "Other"))
+        vts  = int(row.get("votes", 0))
+
+        # Columns: name | category+votes | vote button | status
+        c1, c2, c3, c4 = st.columns([6, 3, 1, 2])
+        c1.markdown(f"**{name}**")
+        c2.markdown(f"_Category:_ **{cat}** &nbsp;·&nbsp; ⭐ **{vts}**")
+
+        # Vote button
+        if c3.button("⬆️ Vote", key=f"vote-{row['id']}", disabled=vote_disabled):
+            if st.session_state.votes_cast < MAX_VOTES_PER_PERSON:
+                inc_vote(row["id"])
+                st.session_state.votes_cast += 1
+                st.toast(f"Vote recorded. {MAX_VOTES_PER_PERSON - st.session_state.votes_cast} remaining.")
+                st.rerun()
+            else:
+                st.warning("You’ve used all 5 votes on this device.")
+
+        # Disabled indicator when out of votes
+        if vote_disabled:
+            c4.write("🚫 No votes left")
 
 st.divider()
 
